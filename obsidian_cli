@@ -1,1 +1,227 @@
-/home/kroybal/bin/obsidian_cli
+#!/bin/bash
+#===============================================================================
+#
+#          FILE:  obsidian_cli
+# 
+#         USAGE:  ./obsidian_cli 
+# 
+#   DESCRIPTION:  Create a CLI around the Obsidian URI API
+# 
+#       OPTIONS:  ---
+#  REQUIREMENTS:  ---
+#          BUGS:  ---
+#         NOTES:  ---
+#
+# Obsidian URIs are typically in this format:
+#
+# obsidian://action?param1=value&param2=value
+#
+#        AUTHOR:  Kirk L. Roybal (), Kirk@timescale.com
+#       COMPANY:  Timescale
+#       VERSION:  1.0
+#       CREATED:  03/28/2023 06:03:27 PM CDT
+#      REVISION:  ---
+#===============================================================================
+
+function urlencode () 
+{ 
+    input=${1:-$(timeout 2s cat -)};
+    ta=$(echo -ne "\t");
+    s="${input//'%'/%25}";
+    s=$(echo -ne "$s" | sed -z 's/\n/%0a/g');
+    s="${s//$ta/%09}";
+    s="${s//' '/%20}";
+    s="${s//'.'/%2e}";
+    s="${s//''/%27}";
+    s="${s//'!'/%21}";
+    s="${s//'*'/%2a}";
+    s="${s//'-'/%2d}";
+    s="${s//'"'/%22}";
+    s="${s//'^'/%5e}";
+    s="${s//'~'/%7e}";
+    s="${s//'_'/%5f}";
+    s="${s//'`'/%60}";
+    s="${s//'{'/%7d}";
+    s="${s//'}'/%7b}";
+    s="${s//'|'/%7c}";
+    s="${s//'"'/%22}";
+    s="${s//'#'/%23}";
+    s="${s//'$'/%24}";
+    s="${s//'&'/%26}";
+    s="${s//'+'/%2B}";
+    s="${s//','/%2C}";
+    s="${s//'/'/%2F}";
+    s="${s//'\'/%5c}";
+    s="${s//':'/%3A}";
+    s="${s//';'/%3B}";
+    s="${s//'='/%3D}";
+    s="${s//'?'/%3F}";
+    s="${s//'@'/%40}";
+    s="${s//'['/%5B}";
+    s="${s//']'/%5D}";
+    s="${s//'('/%28}";
+    s="${s//')'/%29}";
+    s="${s//'<'/%3C}";
+    s="${s//'>'/%3E}";
+    printf %s "$s";
+    REPLY="$s"
+}
+
+actions="open
+search
+new
+hook-get-address"
+
+open_params="vault
+file
+path"
+
+search_params="vault
+query"
+
+new_params="vault
+name
+file
+path
+content
+silent
+append
+overwrite
+x-success"
+
+hook_params="vault
+x-success
+x-error"
+
+function die(){
+    retval=$1
+    shift
+    echo -e "$@"
+    usage
+    exit $retval
+}
+
+function default_vault(){
+    cat ~/.config/obsidian/obsidian.json | # constant on linux
+        jq '.vaults' | # Object map of objects
+        jq -r 'to_entries|map("\(.key)=\(.value|tostring)")|.[]' | # objects to an array
+        head -n 1 | # take the first one
+        cut -d= -f2 | # get all the properties
+        jq ".path" | # only care about the path
+        sed -e 's/^"//' -e 's/"$//' | # strip the lead/trail quotes
+        sed -e 's_.*/__'  # Only need the final directory
+}
+
+function uri_assemble(){
+    # something wrong with the vault parameter
+    #  works for me with a single vault without it.
+    # echo "obsidian://${action}?vault=${vault}&${@}"
+    echo "obsidian://${action}?${@}"
+}
+
+# Set defaults
+vault=$(default_vault | urlencode) # last opened
+ScriptVersion="1.0"   # increment when features appear
+logging=0             # logging accumulator
+action="open"         # [open], new, search
+clobber=""            # [do nothing], overwrite, append
+silent=""
+content=""
+
+#===  FUNCTION  ================================================================
+#         NAME:  usage
+#  DESCRIPTION:  Display usage information.
+#===============================================================================
+function usage ()
+{
+	cat <<- EOT
+
+  Usage :  ${0##/*/} [options] [--] 
+
+  Options: 
+  -a|append          Append to the file if it exists
+  -f|file  [name]    Specify a relative file to the vault
+  -h|help            Display this message
+  -l|log             Cumulative logging (e.g. -lll)
+  -n|new             Create a file or path (requires [-f|-p])
+  -o|open            Open a file or path (opens latest if no [-f|-p] is specified.
+  -p|path  [fqfn]    Specify a fully qualified file to act on
+  -q|quiet           Don't visibly open the file.
+  -s|search [query]  Search the vault for occurrence of a text
+  -t|text [text]     Add some text to the new/open file
+  -v|vault [path]    Set the vault to a directory (default last opened)
+  -V|Version         Display script version
+  
+	EOT
+}    # ----------  end of function usage  ----------
+
+#-----------------------------------------------------------------------
+#  Handle command line arguments
+#-----------------------------------------------------------------------
+
+while getopts ":acf:hlnop:qs:t:v:V" opt
+do
+  case $opt in
+
+    a|append   )  clobber="append";;
+
+    c|clobber  )  clobber="overwrite";;
+
+    f|file     )  filename=$(urlencode "$OPTARG");;
+
+    h|help     )  usage; exit 0   ;;
+
+    l|log      )  (( logging++ )); [[ $logging -gt 2 ]] && set -x;;
+    
+    n|new      )  action="new";;
+
+    o|open     )  action="open";;
+
+    p|path     )  pathname=$(urlencode "$OPTARG");;
+
+    q|quiet    )  silent="silent";;
+
+    s|search   )  searchterm=$(urlencode "$OPTARG"); action="search";;
+
+    t|text     )  content=$(urlencode "$OPTARG");;
+
+    v|vault    )  vault=$(urlencode "$OPTARG");;
+
+    V|Version  )  echo "$0 -- Version $ScriptVersion"; exit 0   ;;
+
+    \? )  echo -e "\n  Option does not exist : $OPTARG\n"
+          usage; exit 1   ;;
+
+  esac    # --- end of case ---
+done
+shift $(($OPTIND-1))
+
+# validate parameters
+case "$action" in
+    new) 
+        [[ "$filename" == "" ]] && [[ "$pathname" == "" ]] && die 1 "Must provide either file or path to 'new'." ;;
+    open)
+        [[ "$filename" == "" ]] && [[ "$pathname" == "" ]] && die 2 "Must provide either file or path to 'open'.";;
+    search) [[ "$searchterm" == "" ]] && die 3 "Must provide a term to search for.";;
+    *) die 4 "Operation $action not supported.";;
+esac
+
+# find out which parameter was filled out
+#   prefer file name to path name
+param=$([[ "$filename" == "" ]] && echo "path=$pathname" || echo "file=$filename")
+case $action in
+   new|open) uri=$(uri_assemble $param);;
+   search) uri=$(uri_assemble "query=$searchterm");;
+esac
+
+function strip_crap() {
+     sed -e '/Debug: Will run Obsidian with the following arguments:/d' -e '/Debug: Additionally, user gave: obsidian:/d' |
+    sed -e '/Loading updated app package/d' -e '/Failed to connect to the bus/d' |
+    sed -e '/Checking for update using Github/d'
+}
+
+[[ $action == 'new' ]] && [[ ! $clobber == '' ]] && uri="${uri}&${clobber}"
+[[ $action == 'new' ]] && [[ ! $silent == '' ]] && uri="${uri}&${silent}"
+[[ $action == 'new' ]] && [[ ! $content == '' ]] && uri="${uri}&content=${content}"
+
+/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=obsidian.sh --file-forwarding md.obsidian.Obsidian @@u $uri @@u 2>&1 | strip_crap
